@@ -238,7 +238,7 @@ static void swaybar_dbusmenu_menu_destroy(struct swaybar_dbusmenu_menu *menu) {
 	free(menu);
 }
 
-void swaybar_dbusmenu_destroy(struct swaybar_dbusmenu *menu) {
+static void swaybar_dbusmenu_destroy(struct swaybar_dbusmenu *menu) {
 	if (!menu) {
 		return;
 	}
@@ -253,6 +253,13 @@ void swaybar_dbusmenu_destroy(struct swaybar_dbusmenu *menu) {
 	close_menus(menu->menu);
 	swaybar_dbusmenu_menu_destroy(menu->menu);
 	free(menu);
+}
+
+void swaybar_dbusmenu_close(struct swaybar_sni *sni) {
+	struct swaybar_dbusmenu *menu = sni->tray->menu;
+	if (menu && menu->sni == sni) {
+		swaybar_dbusmenu_destroy(menu);
+	}
 }
 
 static void xdg_popup_done(void *data, struct xdg_popup *xdg_popup) {

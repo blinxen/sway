@@ -311,6 +311,7 @@ void destroy_sni(struct swaybar_sni *sni) {
 		return;
 	}
 
+	swaybar_dbusmenu_close(sni);
 	cairo_surface_destroy(sni->icon);
 	free(sni->watcher_id);
 	free(sni->service);
