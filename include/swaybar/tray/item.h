@@ -49,7 +49,6 @@ struct swaybar_sni {
 	char *icon_theme_path; // non-standard KDE property
 
 	struct wl_list slots; // swaybar_sni_slot::link
-	char **menu_icon_theme_paths;
 };
 
 struct swaybar_sni *create_sni(char *id, struct swaybar_tray *tray);

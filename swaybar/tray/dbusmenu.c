@@ -78,7 +78,7 @@ struct swaybar_dbusmenu_menu {
 
 struct swaybar_dbusmenu {
 	struct swaybar_sni *sni;
-	sd_bus_slot *signal_slots[3];
+	sd_bus_slot *signal_slots[2];
 	struct swaybar_output *output;
 	struct swaybar_seat *seat;
 	struct swaybar_dbusmenu_menu *menu;
@@ -121,20 +121,6 @@ static int handle_menu_updated(sd_bus_message *msg, void *data,
 		swaybar_dbusmenu_get_layout(sni->tray->menu);
 	}
 	return 0;
-}
-
-static int handle_item_activation_requested(sd_bus_message *msg, void *data,
-		sd_bus_error *error) {
-	return 0; // TODO: Implement handling of hotkeys for opening the menu
-}
-
-static struct swaybar_dbusmenu_surface *swaybar_dbusmenu_surface_create() {
-	struct swaybar_dbusmenu_surface *dbusmenu = calloc(1,
-			sizeof(struct swaybar_dbusmenu_surface));
-	if (!dbusmenu) {
-		sway_log(SWAY_DEBUG, "Could not allocate dbusmenu");
-	}
-	return dbusmenu;
 }
 
 static void xdg_surface_handle_configure(void *data,
@@ -410,11 +396,6 @@ static void draw_menu_items(cairo_t *cairo, struct swaybar_dbusmenu_menu *menu,
 					item->icon_lookup_done = true;
 					list_t *icon_search_paths = create_list();
 					list_cat(icon_search_paths, tray->basedirs);
-					if (sni->menu_icon_theme_paths) {
-						for (char **path = sni->menu_icon_theme_paths; *path; ++path) {
-							list_add(icon_search_paths, *path);
-						}
-					}
 					if (sni->icon_theme_path) {
 						list_add(icon_search_paths, sni->icon_theme_path);
 					}
@@ -488,8 +469,6 @@ static void draw_menu_items(cairo_t *cairo, struct swaybar_dbusmenu_menu *menu,
 		}
 
 		struct swaybar_dbusmenu_hotspot *hotspot = &item->hotspot;
-		hotspot->y = height;
-
 		hotspot->y = height;
 		hotspot->height = new_height - height;
 		// x and width is not known at the moment
@@ -587,7 +566,7 @@ static void swaybar_dbusmenu_draw_menu(struct swaybar_dbusmenu_menu *menu,
 	}
 
 	if (!menu->surface) {
-		menu->surface = swaybar_dbusmenu_surface_create();
+		menu->surface = calloc(1, sizeof(struct swaybar_dbusmenu_surface));
 		if (!menu->surface) {
 			sway_log(SWAY_ERROR, "Could not create surface for menu %d", menu->item_id);
 			return;
@@ -1018,8 +997,6 @@ static void swaybar_dbusmenu_setup_signals(struct swaybar_dbusmenu *menu) {
 		handle_menu_updated, &menu->signal_slots[0]);
 	swaybar_dbusmenu_subscribe_signal(menu, "LayoutUpdated",
 		handle_menu_updated, &menu->signal_slots[1]);
-	swaybar_dbusmenu_subscribe_signal(menu, "ItemActivationRequested",
-		handle_item_activation_requested, &menu->signal_slots[2]);
 }
 
 static void swaybar_dbusmenu_get_layout(struct swaybar_dbusmenu *menu) {
@@ -1046,49 +1023,6 @@ static void swaybar_dbusmenu_get_layout(struct swaybar_dbusmenu *menu) {
 				menu->sni->service, menu->sni->menu, strerror(-ret));
 		free(slot);
 	}
-}
-
-static int get_icon_theme_path_callback(sd_bus_message *msg, void *data,
-		sd_bus_error *error) {
-	struct swaybar_sni_slot *slot = data;
-	struct swaybar_sni *sni = slot->sni;
-	wl_list_remove(&slot->link);
-	free(slot);
-
-	int ret;
-	if (!sd_bus_message_is_method_error(msg, NULL)) {
-		ret = sd_bus_message_enter_container(msg, 'v', NULL);
-		if (ret >= 0) {
-			ret = sd_bus_message_read_strv(msg, &sni->menu_icon_theme_paths);
-		}
-	} else {
-		ret = -sd_bus_message_get_errno(msg);
-	}
-
-	if (ret < 0) {
-		sway_log(SWAY_ERROR, "%s%s failed to read IconThemePath: %s", sni->service,
-			sni->menu, strerror(-ret));
-	}
-	return ret;
-}
-
-static void swaybar_dbusmenu_setup(struct swaybar_dbusmenu *menu) {
-		struct swaybar_sni_slot *slot = calloc(1, sizeof(struct swaybar_sni_slot));
-	slot->sni = menu->sni;
-	int ret = sd_bus_call_method_async( menu->sni->tray->bus, &slot->slot,
-			menu->sni->service, menu->sni->path, "org.freedesktop.DBus.Properties",
-			"Get", get_icon_theme_path_callback, slot, "ss", menu->sni->interface,
-			"IconThemePath");
-	if (ret >= 0) {
-		wl_list_insert(&menu->sni->slots, &slot->link);
-	} else {
-		sway_log(SWAY_ERROR, "%s%s failed to get IconThemePath: %s",
-			menu->sni->service, menu->sni->menu, strerror(-ret));
-		free(slot);
-	}
-
-	swaybar_dbusmenu_setup_signals(menu);
-	swaybar_dbusmenu_get_layout(menu);
 }
 
 void swaybar_dbusmenu_open(struct swaybar_sni *sni,
@@ -1118,7 +1052,8 @@ void swaybar_dbusmenu_open(struct swaybar_sni *sni,
 	dbusmenu->y = seat->pointer.y;
 	dbusmenu->bar = output->bar;
 
-	swaybar_dbusmenu_setup(dbusmenu);
+	swaybar_dbusmenu_setup_signals(dbusmenu);
+	swaybar_dbusmenu_get_layout(dbusmenu);
 }
 
 static void close_child_menus_except(struct swaybar_dbusmenu_menu *menu,
