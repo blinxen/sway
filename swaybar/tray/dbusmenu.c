@@ -903,7 +903,7 @@ static int get_layout_callback(sd_bus_message *msg, void *data,
 	free(slot);
 
 	struct swaybar_dbusmenu *dbusmenu = sni->tray->menu;
-	if (dbusmenu == NULL) {
+	if (dbusmenu == NULL || dbusmenu->sni != sni) {
 		return 0;
 	}
 
@@ -1049,8 +1049,8 @@ static void swaybar_dbusmenu_get_layout(struct swaybar_dbusmenu *menu, int id) {
 	slot->menu_id = id;
 
 	int ret =
-		sd_bus_call_method_async(menu->sni->tray->bus, NULL, menu->sni->service,
-				menu->sni->menu, menu_interface, "GetLayout",
+		sd_bus_call_method_async(menu->sni->tray->bus, &slot->slot,
+				menu->sni->service, menu->sni->menu, menu_interface, "GetLayout",
 				get_layout_callback, slot, "iias", id, -1, NULL);
 
 	if (ret >= 0) {
