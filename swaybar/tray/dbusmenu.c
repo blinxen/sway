@@ -1094,6 +1094,12 @@ static void swaybar_dbusmenu_setup(struct swaybar_dbusmenu *menu) {
 void swaybar_dbusmenu_open(struct swaybar_sni *sni,
 		struct swaybar_output *output, struct swaybar_seat *seat, uint32_t serial,
 		int x, int y) {
+	if (!output->bar->wm_base) {
+		sway_log(SWAY_ERROR, "Compositor does not support xdg-shell, "
+			"can't show tray menu");
+		return;
+	}
+
 	struct swaybar_dbusmenu *dbusmenu = sni->tray->menu;
 	if (!dbusmenu) {
 		dbusmenu = calloc(1, sizeof(struct swaybar_dbusmenu));
