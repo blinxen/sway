@@ -24,8 +24,7 @@
 
 static const char *menu_interface = "com.canonical.dbusmenu";
 
-static void swaybar_dbusmenu_get_layout_root(struct swaybar_dbusmenu *menu);
-static void swaybar_dbusmenu_get_layout(struct swaybar_dbusmenu *menu, int id);
+static void swaybar_dbusmenu_get_layout(struct swaybar_dbusmenu *menu);
 static void swaybar_dbusmenu_draw(struct swaybar_dbusmenu *dbusmenu, int id);
 
 struct swaybar_dbusmenu_hotspot {
@@ -112,27 +111,14 @@ static void commit_menu_surface(struct swaybar_dbusmenu_menu *menu)
 	wl_surface_commit(surface);
 }
 
-static int handle_items_properties_updated(sd_bus_message *msg, void *data,
+static int handle_menu_updated(sd_bus_message *msg, void *data,
 		sd_bus_error *error) {
 	struct swaybar_sni *sni = data;
-	sway_log(SWAY_DEBUG, "%s%s item properties updated", sni->service, sni->menu);
+	sway_log(SWAY_DEBUG, "%s%s menu updated", sni->service, sni->menu);
 
-	// TODO: Optimize. Update only needed properties
+	// TODO: Optimize. Update only needed properties / the changed subtree
 	if (sni->tray->menu) {
-		swaybar_dbusmenu_get_layout_root(sni->tray->menu);
-	}
-	return 0;
-}
-
-static int handle_layout_updated(sd_bus_message *msg, void *data,
-		sd_bus_error *error) {
-	struct swaybar_sni *sni = data;
-	sway_log(SWAY_DEBUG, "%s%s layout updated", sni->service, sni->menu);
-
-	int id;
-	sd_bus_message_read(msg, "ui", NULL, &id);
-	if (sni->tray->menu) {
-		swaybar_dbusmenu_get_layout(sni->tray->menu, id);
+		swaybar_dbusmenu_get_layout(sni->tray->menu);
 	}
 	return 0;
 }
@@ -761,7 +747,7 @@ static int about_to_show_callback(sd_bus_message *msg, void *data,
 	int need_update;
 	sd_bus_message_read_basic(msg, 'b', &need_update);
 	if (need_update) {
-		swaybar_dbusmenu_get_layout(sni->tray->menu, menu_id);
+		swaybar_dbusmenu_get_layout(sni->tray->menu);
 	}
 
 	swaybar_dbusmenu_draw(sni->tray->menu, menu_id);
@@ -898,7 +884,6 @@ static int get_layout_callback(sd_bus_message *msg, void *data,
 		sd_bus_error *error) {
 	struct swaybar_sni_slot *slot = data;
 	struct swaybar_sni *sni = slot->sni;
-	int menu_id = slot->menu_id;
 	wl_list_remove(&slot->link);
 	free(slot);
 
@@ -922,12 +907,7 @@ static int get_layout_callback(sd_bus_message *msg, void *data,
 
 	sni->tray->menu_pointer_focus = NULL;
 
-	bool already_open = false;
-	struct swaybar_dbusmenu_menu *menu_to_update =
-	find_menu_id(dbusmenu->menu, menu_id);
-	if (menu_to_update && menu_to_update->surface) {
-		already_open = true;
-	}
+	bool already_open = dbusmenu->menu && dbusmenu->menu->surface;
 
 	if (dbusmenu->menu) {
 		close_menus(dbusmenu->menu);
@@ -998,7 +978,7 @@ static int get_layout_callback(sd_bus_message *msg, void *data,
 	}
 
 	if (already_open) {
-		swaybar_dbusmenu_draw(sni->tray->menu, menu_id);
+		swaybar_dbusmenu_draw(dbusmenu, 0);
 	} else {
 		open_menu_id(dbusmenu, 0);
 	}
@@ -1028,14 +1008,14 @@ static void swaybar_dbusmenu_subscribe_signal(struct swaybar_dbusmenu *menu,
 
 static void swaybar_dbusmenu_setup_signals(struct swaybar_dbusmenu *menu) {
 	swaybar_dbusmenu_subscribe_signal(menu, "ItemsPropertiesUpdated",
-		handle_items_properties_updated, &menu->signal_slots[0]);
+		handle_menu_updated, &menu->signal_slots[0]);
 	swaybar_dbusmenu_subscribe_signal(menu, "LayoutUpdated",
-		handle_layout_updated, &menu->signal_slots[1]);
+		handle_menu_updated, &menu->signal_slots[1]);
 	swaybar_dbusmenu_subscribe_signal(menu, "ItemActivationRequested",
 		handle_item_activation_requested, &menu->signal_slots[2]);
 }
 
-static void swaybar_dbusmenu_get_layout(struct swaybar_dbusmenu *menu, int id) {
+static void swaybar_dbusmenu_get_layout(struct swaybar_dbusmenu *menu) {
 	if (menu == NULL) {
 		return;
 	}
@@ -1046,12 +1026,11 @@ static void swaybar_dbusmenu_get_layout(struct swaybar_dbusmenu *menu, int id) {
 		return;
 	}
 	slot->sni = menu->sni;
-	slot->menu_id = id;
 
 	int ret =
 		sd_bus_call_method_async(menu->sni->tray->bus, &slot->slot,
 				menu->sni->service, menu->sni->menu, menu_interface, "GetLayout",
-				get_layout_callback, slot, "iias", id, -1, NULL);
+				get_layout_callback, slot, "iias", 0, -1, NULL);
 
 	if (ret >= 0) {
 		wl_list_insert(&menu->sni->slots, &slot->link);
@@ -1060,10 +1039,6 @@ static void swaybar_dbusmenu_get_layout(struct swaybar_dbusmenu *menu, int id) {
 				menu->sni->service, menu->sni->menu, strerror(-ret));
 		free(slot);
 	}
-}
-
-static void swaybar_dbusmenu_get_layout_root(struct swaybar_dbusmenu *menu) {
-	swaybar_dbusmenu_get_layout(menu, 0);
 }
 
 static int get_icon_theme_path_callback(sd_bus_message *msg, void *data,
@@ -1106,7 +1081,7 @@ static void swaybar_dbusmenu_setup(struct swaybar_dbusmenu *menu) {
 	}
 
 	swaybar_dbusmenu_setup_signals(menu);
-	swaybar_dbusmenu_get_layout_root(menu);
+	swaybar_dbusmenu_get_layout(menu);
 }
 
 void swaybar_dbusmenu_open(struct swaybar_sni *sni,
