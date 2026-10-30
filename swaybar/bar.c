@@ -319,6 +319,15 @@ static void add_xdg_output(struct swaybar_output *output) {
 		output);
 }
 
+static void xdg_wm_base_handle_ping(void *data, struct xdg_wm_base *wm_base,
+		uint32_t serial) {
+	xdg_wm_base_pong(wm_base, serial);
+}
+
+static const struct xdg_wm_base_listener xdg_wm_base_listener = {
+	.ping = xdg_wm_base_handle_ping,
+};
+
 static void handle_global(void *data, struct wl_registry *registry,
 		uint32_t name, const char *interface, uint32_t version) {
 	struct swaybar *bar = data;
@@ -365,6 +374,7 @@ static void handle_global(void *data, struct wl_registry *registry,
 			&wp_cursor_shape_manager_v1_interface, 1);
 	} else if (strcmp(interface, xdg_wm_base_interface.name) == 0) {
 		bar->wm_base = wl_registry_bind(registry, name, &xdg_wm_base_interface, 1);
+		xdg_wm_base_add_listener(bar->wm_base, &xdg_wm_base_listener, NULL);
 	}
 }
 
