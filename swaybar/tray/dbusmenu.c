@@ -1174,10 +1174,10 @@ bool sway_dbusmenu_pointer_motion(struct swaybar_seat *seat,
 		struct wl_pointer *wl_pointer, uint32_t time_, wl_fixed_t surface_x,
 		wl_fixed_t surface_y) {
 	struct swaybar_tray *tray = seat->bar->tray;
-	struct swaybar_dbusmenu_menu *focused_menu = tray->menu_pointer_focus;
-	if (!(tray && tray->menu && focused_menu)) {
+	if (!(tray && tray->menu && tray->menu_pointer_focus)) {
 		return false;
 	}
+	struct swaybar_dbusmenu_menu *focused_menu = tray->menu_pointer_focus;
 
 	for (int i = 0; i < focused_menu->items->length; ++i) {
 		struct swaybar_dbusmenu_menu_item *item = focused_menu->items->items[i];
@@ -1269,7 +1269,7 @@ bool sway_dbusmenu_pointer_enter(void *data, struct wl_pointer *wl_pointer,
 		wl_fixed_t surface_y) {
 	struct swaybar_seat *seat = data;
 	struct swaybar_tray *tray = seat->bar->tray;
-	if (!(tray && tray->menu)) {
+	if (!(tray && tray->menu && tray->menu->menu)) {
 		return false;
 	}
 

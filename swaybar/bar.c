@@ -549,7 +549,9 @@ void bar_teardown(struct swaybar *bar) {
 #if HAVE_TRAY
 	destroy_tray(bar->tray);
 #endif
-	xdg_wm_base_destroy(bar->wm_base);
+	if (bar->wm_base) {
+		xdg_wm_base_destroy(bar->wm_base);
+	}
 	free_outputs(&bar->outputs);
 	free_outputs(&bar->unused_outputs);
 	free_seats(&bar->seats);
