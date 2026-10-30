@@ -79,6 +79,7 @@ struct swaybar_dbusmenu_menu {
 
 struct swaybar_dbusmenu {
 	struct swaybar_sni *sni;
+	sd_bus_slot *signal_slots[3];
 	struct swaybar_output *output;
 	struct swaybar_seat *seat;
 	struct swaybar_dbusmenu_menu *menu;
@@ -258,6 +259,10 @@ void swaybar_dbusmenu_destroy(struct swaybar_dbusmenu *menu) {
 
 	menu->sni->tray->menu = NULL;
 	menu->sni->tray->menu_pointer_focus = NULL;
+
+	for (size_t i = 0; i < sizeof(menu->signal_slots) / sizeof(menu->signal_slots[0]); ++i) {
+		sd_bus_slot_unref(menu->signal_slots[i]);
+	}
 
 	close_menus(menu->menu);
 	swaybar_dbusmenu_menu_destroy(menu->menu);
@@ -1002,10 +1007,18 @@ static int get_layout_callback(sd_bus_message *msg, void *data,
 }
 
 static void swaybar_dbusmenu_subscribe_signal(struct swaybar_dbusmenu *menu,
-		const char *signal_name, sd_bus_message_handler_t callback) {
-	int ret = sd_bus_match_signal_async( menu->sni->tray->bus, NULL,
-			menu->sni->service, menu->sni->menu, menu_interface, signal_name, callback,
-			NULL, menu->sni);
+		const char *signal_name, sd_bus_message_handler_t callback,
+		sd_bus_slot **slot) {
+	int ret = sd_bus_match_signal_async(
+		menu->sni->tray->bus,
+		slot,
+		menu->sni->service,
+		menu->sni->menu,
+		menu_interface,
+		signal_name,
+		callback,
+		NULL, menu->sni
+	);
 
 	if (ret < 0) {
 		sway_log(SWAY_ERROR, "%s%s failed to subscribe to signal %s: %s",
@@ -1015,11 +1028,11 @@ static void swaybar_dbusmenu_subscribe_signal(struct swaybar_dbusmenu *menu,
 
 static void swaybar_dbusmenu_setup_signals(struct swaybar_dbusmenu *menu) {
 	swaybar_dbusmenu_subscribe_signal(menu, "ItemsPropertiesUpdated",
-		handle_items_properties_updated);
+		handle_items_properties_updated, &menu->signal_slots[0]);
 	swaybar_dbusmenu_subscribe_signal(menu, "LayoutUpdated",
-		handle_layout_updated);
+		handle_layout_updated, &menu->signal_slots[1]);
 	swaybar_dbusmenu_subscribe_signal(menu, "ItemActivationRequested",
-		handle_item_activation_requested);
+		handle_item_activation_requested, &menu->signal_slots[2]);
 }
 
 static void swaybar_dbusmenu_get_layout(struct swaybar_dbusmenu *menu, int id) {
