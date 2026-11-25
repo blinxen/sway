@@ -85,6 +85,19 @@ struct swaybar_dbusmenu {
 	struct swaybar *bar;
 	int serial;
 	int x, y;
+
+	// Pending method calls of this menu (struct swaybar_sni_slot::link),
+	// cancelled when the menu is destroyed
+	struct wl_list slots;
+	// ItemsPropertiesUpdated, LayoutUpdated and ItemActivationRequested
+	// subscriptions, removed when the menu is destroyed
+	sd_bus_slot *signal_slots[3];
+	// A GetLayout call is in flight, and the layout changed again meanwhile.
+	// Coalesces bursts of update signals into one extra GetLayout call.
+	bool layout_pending;
+	bool layout_dirty;
+	// AboutToShow was sent for the root menu
+	bool root_menu_requested;
 };
 
 struct get_layout_callback_data {
@@ -113,26 +126,24 @@ static void commit_menu_surface(struct swaybar_dbusmenu_menu *menu)
 
 static int handle_items_properties_updated(sd_bus_message *msg, void *data,
 		sd_bus_error *error) {
-	struct swaybar_sni *sni = data;
-	sway_log(SWAY_DEBUG, "%s%s item properties updated", sni->service, sni->menu);
+	struct swaybar_dbusmenu *dbusmenu = data;
+	sway_log(SWAY_DEBUG, "%s%s item properties updated", dbusmenu->sni->service,
+		dbusmenu->sni->menu);
 
 	// TODO: Optimize. Update only needed properties
-	if (sni->tray->menu) {
-		swaybar_dbusmenu_get_layout_root(sni->tray->menu);
-	}
+	swaybar_dbusmenu_get_layout_root(dbusmenu);
 	return 0;
 }
 
 static int handle_layout_updated(sd_bus_message *msg, void *data,
 		sd_bus_error *error) {
-	struct swaybar_sni *sni = data;
-	sway_log(SWAY_DEBUG, "%s%s layout updated", sni->service, sni->menu);
+	struct swaybar_dbusmenu *dbusmenu = data;
+	sway_log(SWAY_DEBUG, "%s%s layout updated", dbusmenu->sni->service,
+		dbusmenu->sni->menu);
 
-	int id;
-	sd_bus_message_read(msg, "ui", NULL, &id);
-	if (sni->tray->menu) {
-		swaybar_dbusmenu_get_layout(sni->tray->menu, id);
-	}
+	// get_layout_callback rebuilds the whole menu tree from the reply, so
+	// fetch the root layout, not only the subtree that changed
+	swaybar_dbusmenu_get_layout_root(dbusmenu);
 	return 0;
 }
 
@@ -258,6 +269,15 @@ void swaybar_dbusmenu_destroy(struct swaybar_dbusmenu *menu) {
 
 	menu->sni->tray->menu = NULL;
 	menu->sni->tray->menu_pointer_focus = NULL;
+
+	struct swaybar_sni_slot *slot, *slot_tmp;
+	wl_list_for_each_safe(slot, slot_tmp, &menu->slots, link) {
+		sd_bus_slot_unref(slot->slot);
+		free(slot);
+	}
+	for (size_t i = 0; i < sizeof(menu->signal_slots) / sizeof(menu->signal_slots[0]); ++i) {
+		sd_bus_slot_unref(menu->signal_slots[i]);
+	}
 
 	close_menus(menu->menu);
 	swaybar_dbusmenu_menu_destroy(menu->menu);
@@ -755,7 +775,7 @@ static int about_to_show_callback(sd_bus_message *msg, void *data,
 	wl_list_remove(&slot->link);
 	free(slot);
 
-	int need_update;
+	int need_update = 0; // stays 0 if msg is an error reply
 	sd_bus_message_read_basic(msg, 'b', &need_update);
 	if (need_update) {
 		swaybar_dbusmenu_get_layout(sni->tray->menu, menu_id);
@@ -789,7 +809,7 @@ static void open_menu_id(struct swaybar_dbusmenu *dbusmenu, int menu_id) {
 		menu_id);
 
 	if (ret >= 0) {
-		wl_list_insert(&sni->slots, &slot->link);
+		wl_list_insert(&dbusmenu->slots, &slot->link);
 	} else {
 		sway_log(SWAY_ERROR, "%s%s failed to send AboutToShow signal: %s",
 			sni->service, sni->menu, strerror(-ret));
@@ -903,6 +923,7 @@ static int get_layout_callback(sd_bus_message *msg, void *data,
 	if (dbusmenu == NULL) {
 		return 0;
 	}
+	dbusmenu->layout_pending = false;
 
 	if (sd_bus_message_is_method_error(msg, NULL)) {
 		sway_log(SWAY_ERROR, "%s%s failed to get layout: %s",
@@ -996,18 +1017,29 @@ static int get_layout_callback(sd_bus_message *msg, void *data,
 
 	if (already_open) {
 		swaybar_dbusmenu_draw(sni->tray->menu, menu_id);
-	} else {
+	} else if (!dbusmenu->root_menu_requested) {
+		// Send AboutToShow only once. Some items (e.g. Nextcloud) rebuild
+		// their menu on every AboutToShow and emit a burst of update signals.
+		// Answering each reply with another AboutToShow feeds back into itself.
+		dbusmenu->root_menu_requested = true;
 		open_menu_id(dbusmenu, 0);
+	}
+
+	if (dbusmenu->layout_dirty) {
+		// The layout changed while this call was in flight
+		dbusmenu->layout_dirty = false;
+		swaybar_dbusmenu_get_layout_root(dbusmenu);
 	}
 
 	return 0;
 }
 
 static void swaybar_dbusmenu_subscribe_signal(struct swaybar_dbusmenu *menu,
-		const char *signal_name, sd_bus_message_handler_t callback) {
-	int ret = sd_bus_match_signal_async( menu->sni->tray->bus, NULL,
+		sd_bus_slot **slot, const char *signal_name,
+		sd_bus_message_handler_t callback) {
+	int ret = sd_bus_match_signal_async(menu->sni->tray->bus, slot,
 			menu->sni->service, menu->sni->menu, menu_interface, signal_name, callback,
-			NULL, menu->sni);
+			NULL, menu);
 
 	if (ret < 0) {
 		sway_log(SWAY_ERROR, "%s%s failed to subscribe to signal %s: %s",
@@ -1016,16 +1048,22 @@ static void swaybar_dbusmenu_subscribe_signal(struct swaybar_dbusmenu *menu,
 }
 
 static void swaybar_dbusmenu_setup_signals(struct swaybar_dbusmenu *menu) {
-	swaybar_dbusmenu_subscribe_signal(menu, "ItemsPropertiesUpdated",
-		handle_items_properties_updated);
-	swaybar_dbusmenu_subscribe_signal(menu, "LayoutUpdated",
-		handle_layout_updated);
-	swaybar_dbusmenu_subscribe_signal(menu, "ItemActivationRequested",
-		handle_item_activation_requested);
+	swaybar_dbusmenu_subscribe_signal(menu, &menu->signal_slots[0],
+		"ItemsPropertiesUpdated", handle_items_properties_updated);
+	swaybar_dbusmenu_subscribe_signal(menu, &menu->signal_slots[1],
+		"LayoutUpdated", handle_layout_updated);
+	swaybar_dbusmenu_subscribe_signal(menu, &menu->signal_slots[2],
+		"ItemActivationRequested", handle_item_activation_requested);
 }
 
 static void swaybar_dbusmenu_get_layout(struct swaybar_dbusmenu *menu, int id) {
 	if (menu == NULL) {
+		return;
+	}
+
+	if (menu->layout_pending) {
+		// Fetch once more when the call in flight returns
+		menu->layout_dirty = true;
 		return;
 	}
 
@@ -1038,12 +1076,13 @@ static void swaybar_dbusmenu_get_layout(struct swaybar_dbusmenu *menu, int id) {
 	slot->menu_id = id;
 
 	int ret =
-		sd_bus_call_method_async(menu->sni->tray->bus, NULL, menu->sni->service,
+		sd_bus_call_method_async(menu->sni->tray->bus, &slot->slot, menu->sni->service,
 				menu->sni->menu, menu_interface, "GetLayout",
 				get_layout_callback, slot, "iias", id, -1, NULL);
 
 	if (ret >= 0) {
-		wl_list_insert(&menu->sni->slots, &slot->link);
+		wl_list_insert(&menu->slots, &slot->link);
+		menu->layout_pending = true;
 	} else {
 		sway_log(SWAY_ERROR, "%s%s failed to call method GetLayout: %s",
 				menu->sni->service, menu->sni->menu, strerror(-ret));
@@ -1108,6 +1147,7 @@ void swaybar_dbusmenu_open(struct swaybar_sni *sni,
 			sway_log(SWAY_DEBUG, "Could not allocate dbusmenu");
 			return;
 		}
+		wl_list_init(&dbusmenu->slots);
 		sni->tray->menu = dbusmenu;
 	}
 
@@ -1270,7 +1310,8 @@ bool sway_dbusmenu_pointer_enter(void *data, struct wl_pointer *wl_pointer,
 		wl_fixed_t surface_y) {
 	struct swaybar_seat *seat = data;
 	struct swaybar_tray *tray = seat->bar->tray;
-	if (!(tray && tray->menu)) {
+	if (!(tray && tray->menu && tray->menu->menu)) {
+		// No menu, or its layout has not arrived yet: nothing to focus
 		return false;
 	}
 
